@@ -435,7 +435,10 @@ select,
 #add-task-form input,
 #add-task-form select,
 #add-task-form textarea,
-#admin-login-form input {
+#admin-login-form input,
+.modal-content input,
+.modal-content select,
+.modal-content textarea {
   width: 100%;
   padding: 0.75rem;
   font-size: 1rem;
@@ -445,7 +448,8 @@ select,
   border-radius: 4px;
 }
 
-#add-task-form textarea {
+#add-task-form textarea,
+.modal-content textarea {
     min-height: 100px;
     resize: vertical;
 }
@@ -567,19 +571,9 @@ select,
 .modal-content {
     padding: 1.5rem;
     overflow-y: auto;
-}
-
-.modal-content textarea {
-    width: 100%;
-    min-height: 120px;
-    resize: vertical;
-    background-color: var(--background-color);
-    color: var(--text-color);
-    border: 1px solid var(--border-color);
-    padding: 0.75rem;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
 }
 
 .modal-footer {
@@ -598,10 +592,77 @@ select,
 
 .report-actions {
   display: flex;
-  gap: 1rem;
+  gap: 2rem;
   margin-bottom: 2rem;
   flex-wrap: wrap;
+  align-items: flex-end;
 }
+
+.report-builder {
+    border: 1px solid var(--border-color);
+    padding: 1.5rem;
+    border-radius: 8px;
+    background-color: var(--table-row-bg);
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    flex-grow: 1;
+}
+
+.report-builder h4 {
+    margin: 0 0 0.25rem 0;
+    font-family: 'Space Grotesk', sans-serif;
+    color: var(--primary-color);
+    font-size: 1.2rem;
+}
+
+.report-builder p {
+    margin: 0 0 1rem 0;
+    font-size: 0.9rem;
+    color: #b0b0b0;
+}
+
+.report-builder fieldset {
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1rem 1.5rem;
+    margin: 0;
+}
+
+.report-builder legend {
+    padding: 0 0.5rem;
+    font-weight: 500;
+    color: var(--text-color);
+}
+
+.option-group {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    padding-top: 0.5rem;
+}
+
+.option-group label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+}
+
+.option-group input[type="radio"],
+.option-group input[type="checkbox"] {
+    accent-color: var(--primary-color);
+    width: auto;
+}
+
+.generation-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: center;
+}
+
 
 #report-output {
   background-color: var(--table-header-bg);
@@ -800,7 +861,6 @@ select,
   display: flex;
   justify-content: flex-end;
   gap: 1rem;
-  margin-bottom: 1rem;
 }
 
 .editable-report {

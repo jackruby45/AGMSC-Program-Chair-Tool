@@ -507,7 +507,7 @@ const App = () => {
              <ProgressViewer allTasks={activeTasks} termYear={plan.termYear} />
           )}
           {activeTab === 'reports' && isAdmin && plan && (
-            <AutomatedReportsView plan={plan} />
+            <AutomatedReportsView plan={plan} showNotification={showNotification} />
           )}
           {activeTab === 'saveLoad' && (
               <SaveLoadView
@@ -730,6 +730,7 @@ const BaselineTasksView = ({ plan, onTaskUpdate, onOpenModal, onOpenInfoModal, i
                 <th>Status</th>
                 <th>Priority</th>
                 <th>Details</th>
+                <th className="column-actions">Actions</th>
                 <th className="column-info">Info</th>
               </tr>
             </thead>
@@ -769,6 +770,7 @@ const AddedTasksView = ({ plan, onTaskUpdate, onOpenModal, isAdmin }: { plan: Pl
                 <th>Status</th>
                 <th>Priority</th>
                 <th>Details</th>
+                <th className="column-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -891,7 +893,20 @@ const RemovedTasksView = ({ plan, onTaskUpdate, onOpenModal, isAdmin }: { plan: 
   );
 };
 
-const TaskRow = ({ task, onUpdate, onOpenModal, onOpenInfoModal, isAdmin }: { task: Task, onUpdate: (task: Task) => void, onOpenModal: (task: Task) => void, onOpenInfoModal?: (task: Task) => void, isAdmin: boolean }) => {
+// FIX: Extracted props to a type alias to fix issue with React's special 'key' prop.
+type TaskRowProps = {
+    task: Task;
+    onUpdate: (task: Task) => void;
+    onOpenModal: (task: Task) => void;
+    onOpenInfoModal?: (task: Task) => void;
+    isAdmin: boolean;
+};
+
+// FIX: All three errors are related to passing a `key` prop to the `TaskRow` component.
+// By explicitly typing `TaskRow` as `React.FC<TaskRowProps>`, we inform TypeScript that
+// it's a React component that can receive special React props like `key`, which are
+// not expected to be part of the component's own props interface (`TaskRowProps`).
+const TaskRow: React.FC<TaskRowProps> = ({ task, onUpdate, onOpenModal, onOpenInfoModal, isAdmin }) => {
   const handleFieldChange = (field: keyof Task, value: string) => {
     onUpdate({ ...task, [field]: value });
   };
@@ -952,6 +967,13 @@ const TaskRow = ({ task, onUpdate, onOpenModal, onOpenInfoModal, isAdmin }: { ta
             Manage Details
         </button>
       </td>
+      {task.status !== 'Completed' && (
+        <td className="column-actions">
+            <button className="action-btn-small delete-btn" onClick={() => onUpdate({ ...task, status: 'Removed' })}>
+                Remove
+            </button>
+        </td>
+      )}
       {onOpenInfoModal && (
         <td className="column-info">
           {task.excerpts && task.excerpts.length > 0 && (
@@ -1148,13 +1170,22 @@ const GanttView = ({ tasks, termYear }: { tasks: Task[], termYear: string }) => 
 
 // --- Other Main View Components ---
 
-const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
+const AutomatedReportsView = ({ plan, showNotification }: { plan: Plan, showNotification: (message: string) => void }) => {
     const [report, setReport] = useState<string | null>(null);
     const [reportDate, setReportDate] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [loadingMessage, setLoadingMessage] = useState('Working...');
     const [isEditing, setIsEditing] = useState(false);
+    
+    const [reportStyle, setReportStyle] = useState('executive'); // 'executive', 'detailed', 'bullets'
+    const [statusesToInclude, setStatusesToInclude] = useState({
+        'Completed': true,
+        'In-Progress': true,
+        'Not-Started': true,
+    });
+    const [priorityFocus, setPriorityFocus] = useState('all'); // 'all', 'high', 'high-medium'
+    const [detailLevel, setDetailLevel] = useState('standard'); // 'basic', 'standard', 'full'
 
     const reportContentRef = useRef<HTMLDivElement>(null);
     const narrativeRef = useRef<HTMLDivElement>(null);
@@ -1165,8 +1196,6 @@ const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
     useEffect(() => {
         const narrativeDiv = narrativeRef.current;
         if (narrativeDiv && report && !isEditing) {
-            // When not in edit mode, ensure the div's content matches the state.
-            // This handles initial report generation and discarding changes.
             if (narrativeDiv.innerHTML !== report) {
                 narrativeDiv.innerHTML = report;
             }
@@ -1204,30 +1233,93 @@ const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
             };
 
             setLoadingMessage('Generating report narrative...');
-
             const planSummary = JSON.stringify(planForAnalysis, null, 2);
-            const prompt = `
+            
+            let finalPrompt = `
             You are an assistant for the Program Committee Chairman of the AGMSC.
             The current chairperson is ${plan.chairperson}.
-            Your task is to generate a comprehensive, well-structured progress report based on the provided project plan data.
-            The report should be written in a professional, narrative style suitable for presenting to a committee. It should sound natural and confident, not like a generic AI response.
+            Your task is to generate a comprehensive, well-structured progress report based on the provided project plan data and the specific instructions that follow.
+            Format the entire output as clean HTML content. Use <h3> for section titles and <p> and <ul>/<li> for content. Do not include any html, head or body tags. Do not use markdown.
+            `;
+
+            // 1. Add Report Style instruction
+            switch (reportStyle) {
+                case 'executive':
+                    finalPrompt += `
+                    **Report Style:** Write a formal executive summary. It should be a high-level overview of the project's current status, key highlights, and overall outlook. Be concise and professional.
+                    `;
+                    break;
+                case 'detailed':
+                    finalPrompt += `
+                    **Report Style:** Write a detailed progress update. Create separate sections for different task statuses (e.g., Accomplishments, In Progress). Be comprehensive and thorough in your descriptions.
+                    `;
+                    break;
+                case 'bullets':
+                    finalPrompt += `
+                    **Report Style:** Write the report using bullet points. Use clear headings for each section and list tasks as bullet points underneath. Be direct and to the point.
+                    `;
+                    break;
+            }
+
+            // 2. Add Statuses to Include instruction
+            const selectedStatuses = Object.entries(statusesToInclude)
+                .filter(([, checked]) => checked)
+                .map(([status]) => status);
+            if (selectedStatuses.length > 0 && selectedStatuses.length < 3) {
+                finalPrompt += `
+                **Task Status Filter:** Only include tasks with the following statuses in your report: ${selectedStatuses.join(', ')}. Ignore all other tasks.
+                `;
+            } else {
+                finalPrompt += `
+                **Task Status Filter:** Include tasks of all statuses (Completed, In-Progress, Not-Started).
+                `;
+            }
+
+            // 3. Add Priority Focus instruction
+            switch (priorityFocus) {
+                case 'high':
+                    finalPrompt += `
+                    **Task Priority Filter:** Focus exclusively on 'High' priority tasks. Do not mention Medium or Low priority tasks.
+                    `;
+                    break;
+                case 'high-medium':
+                    finalPrompt += `
+                    **Task Priority Filter:** Include tasks with 'High' and 'Medium' priority. Exclude 'Low' priority tasks.
+                    `;
+                    break;
+                default: // 'all'
+                    finalPrompt += `
+                    **Task Priority Filter:** Include tasks of all priority levels.
+                    `;
+                    break;
+            }
+
+            // 4. Add Detail Level instruction
+            switch (detailLevel) {
+                case 'basic':
+                    finalPrompt += `
+                    **Detail Level:** For each task, only mention its name. Do not include dates, responsible person, comments, or attachments.
+                    `;
+                    break;
+                case 'standard':
+                    finalPrompt += `
+                    **Detail Level:** For each task, include its name, start date, and due date.
+                    `;
+                    break;
+                case 'full':
+                    finalPrompt += `
+                    **Detail Level:** For each task, provide full details: name, dates, responsible person, a summary of its comments, and a list of any attachment filenames (from the 'attachmentNames' property).
+                    `;
+                    break;
+            }
             
-            **IMPORTANT INSTRUCTIONS:**
-            1.  Generate the narrative sections as requested below.
-            2.  If a task has attachments, note this by listing the filenames found in the 'attachmentNames' property. Do not attempt to interpret or summarize the content of these files. Simply mention that files are attached and list their names.
-            3.  Format the entire output as clean HTML content. Use <h3> for section titles and <p> and <ul>/<li> for content. Do not include any html, head or body tags. Do not use markdown like asterisks (*) for lists; use proper HTML <ul> and <li> tags instead.
-
-            **NARRATIVE SECTIONS TO GENERATE:**
-            1.  **Executive Summary:** A brief overview of the project's current status, key highlights, and overall outlook.
-            2.  **Key Accomplishments:** List major tasks that have been completed.
-            3.  **Items in Progress:** Detail tasks currently being worked on, referencing attachment filenames for context where available.
-            4.  **Upcoming Priorities:** Highlight critical tasks that are not yet started, especially those with high priority or upcoming due dates.
-
+            finalPrompt += `
+            Here is the project plan data in JSON format. Use this data to generate the report according to all the instructions above.
             Project Plan Data:
             ${planSummary}
             `;
 
-            const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
+            const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: finalPrompt });
             setReport(response.text);
             setIsEditing(false);
         } catch (e) {
@@ -1246,8 +1338,6 @@ const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
     };
 
     const handleDiscardChanges = () => {
-        // Just turn off editing. The useEffect will see isEditing is false and
-        // sync the div's innerHTML back to the unchanged `report` state.
         setIsEditing(false);
     };
     
@@ -1322,31 +1412,72 @@ const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
         }
     };
 
+    const handleStatusChange = (status: keyof typeof statusesToInclude) => {
+        setStatusesToInclude(prev => ({ ...prev, [status]: !prev[status] }));
+    };
 
     return (
         <div className="report-panel">
             <div className="report-actions">
-                <button className="action-btn primary" onClick={generateReport} disabled={loading || !ai}>
-                    {loading ? <><div className="small-spinner"></div> Generating...</> : 'Generate Report'}
-                </button>
-                {report && !loading && (
-                    <>
-                        {!isEditing ? (
-                             <button className="action-btn" onClick={() => setIsEditing(true)}>Edit Report</button>
-                        ) : (
-                            <div className="report-edit-actions">
-                                <button className="action-btn" onClick={handleDiscardChanges}>Discard Changes</button>
-                                <button className="action-btn primary" onClick={handleSaveChanges}>Save Changes</button>
-                            </div>
-                        )}
-                        <button className="action-btn" onClick={printReport}>
-                            Print Report
-                        </button>
-                        <button className="action-btn pdf-save-btn" onClick={saveAsPdf}>
-                            Save as PDF
-                        </button>
-                    </>
-                )}
+                <div className="report-builder">
+                    <h4>Custom Report Builder</h4>
+                    <p>Select options below to generate a tailored report narrative.</p>
+                    <fieldset>
+                        <legend>Report Style</legend>
+                        <div className="option-group">
+                            <label><input type="radio" name="reportStyle" value="executive" checked={reportStyle === 'executive'} onChange={(e) => setReportStyle(e.target.value)} /> Formal Executive Summary</label>
+                            <label><input type="radio" name="reportStyle" value="detailed" checked={reportStyle === 'detailed'} onChange={(e) => setReportStyle(e.target.value)} /> Detailed Progress Update</label>
+                            <label><input type="radio" name="reportStyle" value="bullets" checked={reportStyle === 'bullets'} onChange={(e) => setReportStyle(e.target.value)} /> Quick Bullet Points</label>
+                        </div>
+                    </fieldset>
+                    <fieldset>
+                        <legend>Task Statuses to Include</legend>
+                        <div className="option-group">
+                            <label><input type="checkbox" checked={statusesToInclude['Completed']} onChange={() => handleStatusChange('Completed')} /> Completed</label>
+                            <label><input type="checkbox" checked={statusesToInclude['In-Progress']} onChange={() => handleStatusChange('In-Progress')} /> In Progress</label>
+                            <label><input type="checkbox" checked={statusesToInclude['Not-Started']} onChange={() => handleStatusChange('Not-Started')} /> Not Started</label>
+                        </div>
+                    </fieldset>
+                    <fieldset>
+                        <legend>Task Priority Focus</legend>
+                        <div className="option-group">
+                            <label><input type="radio" name="priorityFocus" value="all" checked={priorityFocus === 'all'} onChange={(e) => setPriorityFocus(e.target.value)} /> All Priorities</label>
+                            <label><input type="radio" name="priorityFocus" value="high-medium" checked={priorityFocus === 'high-medium'} onChange={(e) => setPriorityFocus(e.target.value)} /> High & Medium</label>
+                            <label><input type="radio" name="priorityFocus" value="high" checked={priorityFocus === 'high'} onChange={(e) => setPriorityFocus(e.target.value)} /> High Priority Only</label>
+                        </div>
+                    </fieldset>
+                    <fieldset>
+                        <legend>Level of Detail</legend>
+                        <div className="option-group">
+                            <label><input type="radio" name="detailLevel" value="basic" checked={detailLevel === 'basic'} onChange={(e) => setDetailLevel(e.target.value)} /> Task Names Only</label>
+                            <label><input type="radio" name="detailLevel" value="standard" checked={detailLevel === 'standard'} onChange={(e) => setDetailLevel(e.target.value)} /> Include Dates</label>
+                            <label><input type="radio" name="detailLevel" value="full" checked={detailLevel === 'full'} onChange={(e) => setDetailLevel(e.target.value)} /> Include Full Details</label>
+                        </div>
+                    </fieldset>
+                </div>
+                <div className="generation-actions">
+                    <button className="action-btn primary" onClick={generateReport} disabled={loading || !ai}>
+                        {loading ? <><div className="small-spinner"></div> Generating...</> : 'Generate Report'}
+                    </button>
+                    {report && !loading && (
+                        <>
+                            {!isEditing ? (
+                                 <button className="action-btn" onClick={() => setIsEditing(true)}>Edit Report</button>
+                            ) : (
+                                <div className="report-edit-actions">
+                                    <button className="action-btn" onClick={handleDiscardChanges}>Discard</button>
+                                    <button className="action-btn primary" onClick={handleSaveChanges}>Save</button>
+                                </div>
+                            )}
+                            <button className="action-btn" onClick={printReport}>
+                                Print Report
+                            </button>
+                            <button className="action-btn pdf-save-btn" onClick={saveAsPdf}>
+                                Save as PDF
+                            </button>
+                        </>
+                    )}
+                </div>
             </div>
             
             <div id="report-output">
@@ -1386,7 +1517,7 @@ const AutomatedReportsView = ({ plan }: { plan: Plan }) => {
                     !loading && (
                         <div className="report-placeholder">
                             <p>
-                                Click "Generate Report" to create a summary of the project plan.
+                                Select your desired options and click "Generate Report" to create a summary of the project plan.
                             </p>
                         </div>
                     )
@@ -1544,6 +1675,92 @@ const AddTaskView = ({ onAddTask, isAdmin }: { onAddTask: (task: Omit<Task, 'id'
     );
 };
 
+const examplePlanJSON = JSON.stringify({
+  "_comment": "This is an example plan file for the AGMSC Task Manager. You can load this file in the 'Save/Load Plan' tab to see a populated plan.",
+  "termYear": "2027-2028",
+  "chairperson": "Jane Doe (Example)",
+  "periods": [
+    {
+      "periodName": "Post-Course & Fall Planning (August - October 2027)",
+      "tasks": [
+        {
+          "_comment": "This is an example of a baseline task that has been completed. Note the status.",
+          "id": 1,
+          "taskName": "Facilitate post-School Wrap-Up Meeting",
+          "responsible": "Program Chairman",
+          "startDate": "2027-08-01",
+          "dueDate": "2027-08-15",
+          "status": "Completed",
+          "priority": "High",
+          "source": "Program Committee Checklist",
+          "comments": "Meeting was successful. Key takeaways were documented and shared with the committee. The next chairperson was announced.",
+          "excerpts": [],
+          "attachments": []
+        },
+        {
+          "_comment": "This is a high-priority task that is currently in progress. It includes an example of an attachment.",
+          "id": 5,
+          "taskName": "Request instructors/deputies to send: Completed evaluation forms",
+          "responsible": "Program Chairman",
+          "startDate": "2027-08-15",
+          "dueDate": "2027-08-31",
+          "status": "In-Progress",
+          "priority": "High",
+          "source": "Program Committee Checklist",
+          "comments": "Sent out initial request on 8/16. Followed up with a reminder on 8/25. Still waiting on forms from 3 instructors. A summary of received feedback is attached as a PDF.",
+          "excerpts": [],
+          "attachments": [
+            {
+              "_comment": "The 'fileContent' is a base64 encoded string of the file. This example is a tiny placeholder PDF.",
+              "fileName": "Feedback_Summary_Q3.pdf",
+              "fileContent": "data:application/pdf;base64,JVBERi0xLjQKJdPr6eEKMSAwIG9iago8PC9UeXBlIC9DYXRhbG9nL1BhZ2VzIDIgMCBSL0xhbmcgKGVuLVVTKSA+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlIC9QYWdlcy9Db3VudCAxL0tpZHMgWyAzIDAgUiBdID4+CmVuZG9iagozIDAgb2JqCjw8L1R5cGUgL1BhZ2UvUGFyZW50IDIgMCBSL1Jlc291cmNlcyA8PC9Gb250IDw8L0YxIDQgMCBSID4+ID4+L01lZGlhQm94IFsgMCAwIDYxMiA3OTIgXS9Db250ZW50cyA1IDAgUiA+PgplbmRvYmoKNC...",
+              "fileType": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "periodName": "Winter Preparation (November 2027 - January 2028)",
+      "tasks": [
+        {
+          "_comment": "This is a user-added task. Note the 'source' field.",
+          "id": 1693858800000,
+          "taskName": "Organize new volunteer onboarding session",
+          "responsible": "Jane Doe",
+          "startDate": "2027-11-10",
+          "dueDate": "2027-11-20",
+          "status": "Not-Started",
+          "priority": "Medium",
+          "source": "User Added",
+          "comments": "Need to create presentation slides and send out calendar invites.",
+          "excerpts": [],
+          "attachments": []
+        },
+        {
+          "_comment": "This task includes an 'excerpt' from the source document, which would be shown in the 'Info' modal.",
+          "id": 35,
+          "taskName": "Prepare for Winter Meetings",
+          "responsible": "Program Chairman",
+          "startDate": "2028-01-15",
+          "dueDate": "2028-01-31",
+          "status": "Not-Started",
+          "priority": "High",
+          "source": "Program Committee Checklist",
+          "comments": "",
+          "excerpts": [
+            {
+              "source": "AGMSC Handbook, Section 2",
+              "text": "The Program Committee Chairperson is responsible for scheduling and preparing all materials for the seasonal committee meetings, including the Winter Meeting."
+            }
+          ],
+          "attachments": []
+        }
+      ]
+    }
+  ]
+}, null, 2);
+
 const SaveLoadView = ({ currentPlan, onPlanLoad }: { currentPlan: Plan | null, onPlanLoad: (plan: Plan) => void }) => {
 
     const handleSave = () => {
@@ -1556,8 +1773,11 @@ const SaveLoadView = ({ currentPlan, onPlanLoad }: { currentPlan: Plan | null, o
         a.download = `agmsc-plan-${currentPlan.termYear}.json`;
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 100);
     };
 
     const handleLoad = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1569,7 +1789,6 @@ const SaveLoadView = ({ currentPlan, onPlanLoad }: { currentPlan: Plan | null, o
                     const text = e.target?.result;
                     if (typeof text === 'string') {
                         const parsedPlan = JSON.parse(text);
-                        // Basic validation
                         if (parsedPlan.termYear && parsedPlan.periods) {
                             onPlanLoad(parsedPlan as Plan);
                         } else {
@@ -1584,6 +1803,20 @@ const SaveLoadView = ({ currentPlan, onPlanLoad }: { currentPlan: Plan | null, o
         }
     };
 
+    const handleDownloadExample = () => {
+        const blob = new Blob([examplePlanJSON], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `agmsc-plan-example.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }, 100);
+    };
+
     return (
         <div className="saveload-panel">
             <h2>Save & Load Plan</h2>
@@ -1596,6 +1829,11 @@ const SaveLoadView = ({ currentPlan, onPlanLoad }: { currentPlan: Plan | null, o
                 <h3>Load Plan from File</h3>
                 <p>Load a previously saved plan from a JSON file. This will replace the current plan with the one from the file.</p>
                 <input type="file" id="load-plan-input" accept=".json" onChange={handleLoad} />
+            </div>
+            <div className="saveload-section">
+                <h3>Download Example File</h3>
+                <p>Download a sample JSON file with example tasks and notes to see the expected format and explore the app's features.</p>
+                <button className="action-btn" onClick={handleDownloadExample}>Download Example Plan</button>
             </div>
         </div>
     );
@@ -1778,7 +2016,6 @@ const InfoModal = ({ task, onClose }: { task: Task; onClose: () => void; }) => {
         </div>
     );
 };
-
 
 // --- Entry Point ---
 const container = document.getElementById('app-container');
